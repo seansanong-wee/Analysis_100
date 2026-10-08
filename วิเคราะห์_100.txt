@@ -1,0 +1,427 @@
+import React, { useState, useMemo, useRef } from 'react';
+import { 
+  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, AreaChart, Area,
+  Cell
+} from 'recharts';
+import { 
+  Activity, Users, Clock, Calendar, Search, 
+  Bell, Stethoscope, AlertTriangle, UploadCloud, FileText, FileUp
+} from 'lucide-react';
+
+// --- HELPER: แปลงวันที่ภาษาไทยเป็น ISO Date (YYYY-MM-DD) ---
+const thaiMonths = {
+  "มกราคม": "01", "กุมภาพันธ์": "02", "มีนาคม": "03", "เมษายน": "04",
+  "พฤษภาคม": "05", "มิถุนายน": "06", "กรกฎาคม": "07", "สิงหาคม": "08",
+  "กันยายน": "09", "ตุลาคม": "10", "พฤศจิกายน": "11", "ธันวาคม": "12"
+};
+
+const parseThaiDate = (thaiDateStr) => {
+  if (!thaiDateStr) return null;
+  const parts = thaiDateStr.trim().split(/\s+/);
+  if (parts.length >= 3) {
+    const d = parts[0].padStart(2, '0');
+    const m = thaiMonths[parts[1]] || "01";
+    const y = parseInt(parts[2]) - 543; // แปลง พ.ศ. เป็น ค.ศ.
+    return `${y}-${m}-${d}`;
+  }
+  return null;
+};
+
+// --- MAIN COMPONENT ---
+export default function App() {
+  const [rawData, setRawData] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // --- CSV PARSING LOGIC ---
+  const processCSV = (csvText) => {
+    setIsLoading(true);
+    try {
+      const lines = csvText.split('\n');
+      const parsedData = [];
+      let currentId = 1;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        const cols = line.split(',');
+        
+        // ตรวจสอบว่าบรรทัดนี้คือข้อมูลหรือไม่ โดยดูจากคอลัมน์แรกว่าเป็นตัวเลข
+        const seqRaw = cols[0];
+        if (/^\d+\.?\d*$/.test(seqRaw)) {
+          const hn = cols[1] ? cols[1].replace('.0', '') : '';
+          const name = cols[2];
+          const dateStr = parseThaiDate(cols[5]);
+          const time = cols[7]; // format "0:13:05" or "23:14:24"
+          const department = cols[9];
+
+          if (hn && dateStr && time) {
+            const hour = parseInt(time.split(':')[0], 10);
+            parsedData.push({
+              id: currentId++,
+              hn: hn,
+              name: name,
+              dateStr: dateStr,
+              time: time,
+              hour: hour,
+              department: department
+            });
+          }
+        }
+      }
+      setRawData(parsedData);
+    } catch (error) {
+      console.error("Error parsing CSV:", error);
+      alert("เกิดข้อผิดพลาดในการอ่านไฟล์ โปรดตรวจสอบรูปแบบไฟล์อีกครั้ง");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleFileUpload = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      processCSV(event.target.result);
+    };
+    // สำคัญ: ควบคุม Encoding เป็น windows-874 เพื่ออ่านภาษาไทย TIS-620
+    reader.readAsText(file, 'windows-874'); 
+  };
+
+  const onFileChange = (e) => {
+    handleFileUpload(e.target.files[0]);
+  };
+
+  const loadMockData = () => {
+    // ข้อมูลจำลองสำหรับทดสอบ UI
+    const data = [];
+    const startDate = new Date(2026, 4, 1);
+    const endDate = new Date(2026, 5, 18);
+    let currentId = 1;
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      const patientsToday = Math.floor(Math.random() * 30) + 30; 
+      for (let i = 0; i < patientsToday; i++) {
+        let hour = Math.random() < 0.4 ? Math.floor(Math.random() * 4) + 17 : Math.floor(Math.random() * 24);
+        data.push({
+          id: currentId++,
+          hn: Math.floor(Math.random() * 900000) + 100000,
+          name: `ผู้ป่วย จำลองที่${currentId}`,
+          dateStr: d.toISOString().split('T')[0],
+          time: `${hour.toString().padStart(2, '0')}:15`,
+          hour: hour,
+          department: 'ER-อุบัติเหตุฉุกเฉิน ER'
+        });
+      }
+    }
+    setRawData(data);
+  };
+
+  // --- DATA PROCESSING (Run only when rawData changes) ---
+  const { totalPatients, avgPerDay, dailyData, hourlyData, peakHourStr, dateRangeStr } = useMemo(() => {
+    if (rawData.length === 0) return { totalPatients: 0 };
+
+    const total = rawData.length;
+    const uniqueDates = [...new Set(rawData.map(d => d.dateStr))];
+    const avg = Math.round(total / (uniqueDates.length || 1));
+
+    // Date Range String
+    const dates = uniqueDates.map(d => new Date(d).getTime()).filter(t => !isNaN(t));
+    let dateRange = '';
+    if (dates.length > 0) {
+      const minD = new Date(Math.min(...dates));
+      const maxD = new Date(Math.max(...dates));
+      dateRange = `${minD.toLocaleDateString('th-TH', {day: 'numeric', month: 'short'})} - ${maxD.toLocaleDateString('th-TH', {day: 'numeric', month: 'short', year: 'numeric'})}`;
+    }
+
+    // Daily Grouping
+    const dailyCounts = {};
+    rawData.forEach(item => { dailyCounts[item.dateStr] = (dailyCounts[item.dateStr] || 0) + 1; });
+    const dailyArr = Object.keys(dailyCounts).sort().map(date => {
+      const d = new Date(date);
+      return {
+        date,
+        displayDate: `${d.getDate()}/${d.getMonth() + 1}`,
+        ผู้ป่วย: dailyCounts[date]
+      };
+    });
+
+    // Hourly Grouping (Filter only non-office hours for highlighting, or show all)
+    const hourlyCounts = Array(24).fill(0);
+    rawData.forEach(item => { hourlyCounts[item.hour]++; });
+    const hourlyArr = hourlyCounts.map((count, index) => ({
+      hour: `${index.toString().padStart(2, '0')}:00`,
+      ผู้ป่วย: count
+    })).filter(d => d.ผู้ป่วย > 0);
+
+    const peak = [...hourlyArr].sort((a, b) => b.ผู้ป่วย - a.ผู้ป่วย)[0];
+    const peakStr = peak ? peak.hour : '-';
+
+    return { totalPatients: total, avgPerDay: avg, dailyData: dailyArr, hourlyData: hourlyArr, peakHourStr: peakStr, dateRangeStr: dateRange };
+  }, [rawData]);
+
+  const filteredData = rawData
+    .filter(item => item.hn.toString().includes(searchTerm) || item.name.includes(searchTerm))
+    .slice(0, 15); // Show top 15
+
+  // --- UPLOAD VIEW ---
+  if (rawData.length === 0) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="w-full max-w-2xl bg-white rounded-3xl shadow-xl overflow-hidden border border-gray-100">
+          <div className="bg-red-50 p-8 text-center border-b border-red-100">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-red-100 mb-4 text-red-600">
+              <Activity className="w-8 h-8" />
+            </div>
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">ระบบรายงาน ER นอกเวลาราชการ</h1>
+            <p className="text-gray-500">กรุณานำเข้าไฟล์ CSV รายงานผู้มารับบริการเพื่อวิเคราะห์ข้อมูล</p>
+          </div>
+          
+          <div className="p-8">
+            <div 
+              className={`border-2 border-dashed rounded-2xl p-10 text-center transition-colors cursor-pointer ${
+                isDragging ? 'border-red-400 bg-red-50' : 'border-gray-300 hover:border-red-300 hover:bg-gray-50'
+              }`}
+              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDragging(false);
+                handleFileUpload(e.dataTransfer.files[0]);
+              }}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <UploadCloud className={`w-12 h-12 mx-auto mb-4 ${isDragging ? 'text-red-500' : 'text-gray-400'}`} />
+              <p className="text-lg font-medium text-gray-700 mb-1">ลากไฟล์มาวางที่นี่ หรือ คลิกเพื่อเลือกไฟล์</p>
+              <p className="text-sm text-gray-400 mb-4">รองรับไฟล์ Report.XLS (.csv)</p>
+              <input 
+                type="file" 
+                accept=".csv" 
+                className="hidden" 
+                ref={fileInputRef} 
+                onChange={onFileChange} 
+              />
+              <button className="px-6 py-2 bg-gray-900 text-white rounded-full font-medium hover:bg-gray-800 transition-colors">
+                เลือกไฟล์ CSV
+              </button>
+            </div>
+
+            <div className="mt-8 text-center">
+              <span className="text-sm text-gray-400">หรือ</span><br/>
+              <button onClick={loadMockData} className="mt-2 text-sm text-blue-600 hover:text-blue-800 underline">
+                โหลดข้อมูลตัวอย่าง (Mock Data)
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- DASHBOARD VIEW ---
+  const StatCard = ({ title, value, icon: Icon, subtext, colorClass }) => (
+    <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-center space-x-4">
+      <div className={`p-4 rounded-xl ${colorClass}`}>
+        <Icon className="w-8 h-8 text-white" />
+      </div>
+      <div>
+        <p className="text-sm font-medium text-gray-500 mb-1">{title}</p>
+        <h3 className="text-2xl font-bold text-gray-800">{value}</h3>
+        {subtext && <p className="text-xs text-gray-400 mt-1">{subtext}</p>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-gray-50/50 font-sans text-gray-800">
+      
+      {/* HEADER NAVBAR */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="bg-red-500 p-2 rounded-lg">
+              <Activity className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-gray-900 leading-tight">ระบบรายงาน ER นอกเวลาราชการ</h1>
+              <p className="text-xs text-gray-500">Dashboard วิเคราะห์ข้อมูล</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-4">
+            <div className="hidden md:flex items-center text-sm text-gray-500 bg-gray-100 px-3 py-1.5 rounded-full">
+              <Calendar className="w-4 h-4 mr-2" />
+              {dateRangeStr}
+            </div>
+            
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-sm font-medium transition-colors"
+            >
+              <FileUp className="w-4 h-4 mr-2" />
+              อัปโหลดใหม่
+            </button>
+            <input type="file" accept=".csv" className="hidden" ref={fileInputRef} onChange={onFileChange} />
+          </div>
+        </div>
+      </header>
+
+      {/* MAIN CONTENT */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        {/* KPI CARDS */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          <StatCard 
+            title="ผู้มารับบริการทั้งหมด" 
+            value={`${totalPatients.toLocaleString()} คน`}
+            icon={Users} 
+            colorClass="bg-blue-500 shadow-blue-200"
+            subtext="จากข้อมูลไฟล์ที่นำเข้า"
+          />
+          <StatCard 
+            title="เฉลี่ยต่อวัน (ในรอบข้อมูล)" 
+            value={`${avgPerDay} คน/วัน`}
+            icon={Stethoscope} 
+            colorClass="bg-emerald-500 shadow-emerald-200"
+            subtext="ปริมาณงานเฉลี่ยของเจ้าหน้าที่"
+          />
+          <StatCard 
+            title="ช่วงเวลาหนาแน่นสุด" 
+            value={peakHourStr}
+            icon={AlertTriangle} 
+            colorClass="bg-red-500 shadow-red-200"
+            subtext="ควรเฝ้าระวังและเพิ่มอัตรากำลัง"
+          />
+        </div>
+
+        {/* CHARTS SECTION */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          
+          {/* LINE CHART: Daily Trends */}
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-lg font-bold text-gray-800">แนวโน้มผู้ป่วยรายวัน</h3>
+            </div>
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={dailyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorPatients" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                  <XAxis dataKey="displayDate" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} />
+                  <RechartsTooltip 
+                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                  />
+                  <Area type="monotone" dataKey="ผู้ป่วย" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorPatients)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* BAR CHART: Hourly Distribution */}
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-lg font-bold text-gray-800">ความหนาแน่นรายชั่วโมง</h3>
+              <div className="text-xs bg-red-50 text-red-600 px-2 py-1 rounded-md border border-red-100">
+                Peak: {peakHourStr}
+              </div>
+            </div>
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={hourlyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                  <XAxis dataKey="hour" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} />
+                  <RechartsTooltip 
+                    cursor={{fill: '#f3f4f6'}}
+                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                  />
+                  <Bar dataKey="ผู้ป่วย" fill="#10b981" radius={[6, 6, 0, 0]} barSize={30}>
+                    {
+                      hourlyData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.hour === peakHourStr ? '#ef4444' : '#10b981'} />
+                      ))
+                    }
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+
+        {/* DATA TABLE SECTION */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="p-6 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <h3 className="text-lg font-bold text-gray-800 flex items-center">
+              <FileText className="w-5 h-5 mr-2 text-gray-400" />
+              รายการข้อมูลผู้ป่วย
+            </h3>
+            
+            {/* Search Bar */}
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Search className="h-4 w-4 text-gray-400" />
+              </div>
+              <input
+                type="text"
+                placeholder="ค้นหา HN หรือ ชื่อผู้ป่วย..."
+                className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-64 bg-gray-50"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+          </div>
+          
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+                  <th className="p-4 font-medium">ลำดับ</th>
+                  <th className="p-4 font-medium">HN</th>
+                  <th className="p-4 font-medium">ชื่อ - สกุล</th>
+                  <th className="p-4 font-medium">วันที่มารับบริการ</th>
+                  <th className="p-4 font-medium">เวลา</th>
+                  <th className="p-4 font-medium">แผนก/ห้องตรวจ</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 text-sm text-gray-700">
+                {filteredData.map((row, idx) => (
+                  <tr key={row.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="p-4 text-gray-500">{row.id}</td>
+                    <td className="p-4 font-medium text-blue-600">{row.hn}</td>
+                    <td className="p-4">{row.name}</td>
+                    <td className="p-4">{new Date(row.dateStr).toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' })}</td>
+                    <td className="p-4">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200">
+                        <Clock className="w-3 h-3 mr-1" />
+                        {row.time}
+                      </span>
+                    </td>
+                    <td className="p-4 text-gray-500">{row.department}</td>
+                  </tr>
+                ))}
+                {filteredData.length === 0 && (
+                  <tr>
+                    <td colSpan="6" className="p-12 text-center text-gray-500">
+                      ไม่พบข้อมูลที่ค้นหา
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-between items-center text-sm text-gray-500">
+            <span>แสดงตัวอย่าง 15 รายการแรก (จากทั้งหมด {totalPatients} รายการ)</span>
+          </div>
+        </div>
+
+      </main>
+    </div>
+  );
+}
